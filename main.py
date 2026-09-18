@@ -466,6 +466,8 @@ def main() -> None:
                     data=pseudo_png,
                     file_name=pseudo_name,
                     mime="image/png",
+                    key=f"download_pseudocolor_{range_token}",
+                    on_click="ignore",
                     width="stretch",
                 )
 
@@ -560,6 +562,8 @@ def main() -> None:
                         data=ply_data,
                         file_name=ply_name,
                         mime="application/octet-stream",
+                        key=f"download_pointcloud_{cloud_token}",
+                        on_click="ignore",
                         width="stretch",
                     )
 
