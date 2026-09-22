@@ -156,6 +156,37 @@ def test_intrinsics_support_color_calibration_structure() -> None:
     assert intrinsics.fy == pytest.approx(2253.15161133)
     assert intrinsics.cx == pytest.approx(1930.19335938)
     assert intrinsics.cy == pytest.approx(1078.02014160)
+    assert intrinsics.distortion is not None
+    assert intrinsics.distortion.k1 == pytest.approx(0.07992544)
+    assert intrinsics.distortion.k2 == pytest.approx(-0.10850055)
+    assert intrinsics.distortion.model == 4
+
+
+def test_intrinsics_parses_all_color_distortion_coefficients() -> None:
+    payload = {
+        "color": {"fx": 2257.163086, "fy": 2256.109619, "cx": 1908.697021, "cy": 1072.799805},
+        "color_distortion": {
+            "k1": 0.083156, "k2": -0.111383, "k3": 0.046383,
+            "k4": 0.0, "k5": 0.0, "k6": 0.0,
+            "p1": -0.000647, "p2": -0.000524, "model": None,
+        },
+    }
+
+    intrinsics = intrinsics_from_mapping(payload)
+
+    assert intrinsics.distortion is not None
+    assert intrinsics.distortion.k3 == pytest.approx(0.046383)
+    assert intrinsics.distortion.p1 == pytest.approx(-0.000647)
+    assert intrinsics.distortion.p2 == pytest.approx(-0.000524)
+    assert not intrinsics.distortion.is_zero
+
+
+def test_intrinsics_rejects_nonfinite_distortion() -> None:
+    with pytest.raises(ValueError, match="k1"):
+        intrinsics_from_mapping({
+            "fx": 1, "fy": 1, "cx": 0, "cy": 0,
+            "color_distortion": {"k1": float("nan")},
+        })
 
 
 def test_intrinsics_reject_invalid_focal_length() -> None:

@@ -7,7 +7,7 @@ import numpy as np
 from matplotlib import colormaps
 from PIL import Image
 
-from .models import Intrinsics, PointCloud
+from .models import Distortion, Intrinsics, PointCloud
 
 
 COLORMAPS: dict[str, str] = {
@@ -52,14 +52,15 @@ def depth_statistics(depth_m: np.ndarray) -> dict[str, float | int]:
     valid = np.asarray(depth_m)[mask]
     if not valid.size:
         return {"valid": 0, "invalid": int(np.asarray(depth_m).size)}
+    p02, p98 = np.percentile(valid, [2, 98])
     return {
         "valid": int(valid.size),
         "invalid": int(np.asarray(depth_m).size - valid.size),
         "min": float(np.min(valid)),
         "max": float(np.max(valid)),
         "mean": float(np.mean(valid)),
-        "p02": float(np.percentile(valid, 2)),
-        "p98": float(np.percentile(valid, 98)),
+        "p02": float(p02),
+        "p98": float(p98),
     }
 
 
@@ -99,7 +100,7 @@ def render_pseudocolor(
 def encode_png(image: np.ndarray) -> bytes:
     buffer = io.BytesIO()
     Image.fromarray(np.asarray(image, dtype=np.uint8), mode="RGB").save(
-        buffer, format="PNG", optimize=True
+        buffer, format="PNG", optimize=False, compress_level=1
     )
     return buffer.getvalue()
 
@@ -128,8 +129,9 @@ def _sample_mask(mask: np.ndarray, max_points: int | None) -> np.ndarray:
         return mask
 
     step = max(2, int(math.ceil(math.sqrt(count / max_points))))
-    rows, columns = np.indices(mask.shape)
-    sampled = mask & (rows % step == 0) & (columns % step == 0)
+    row_grid = (np.arange(mask.shape[0]) % step == 0)[:, None]
+    column_grid = (np.arange(mask.shape[1]) % step == 0)[None, :]
+    sampled = mask & row_grid & column_grid
     sampled_count = int(np.count_nonzero(sampled))
     if sampled_count == 0:
         flat_indices = np.flatnonzero(mask)
@@ -146,6 +148,54 @@ def _sample_mask(mask: np.ndarray, max_points: int | None) -> np.ndarray:
     return sampled
 
 
+def undistort_normalized_points(
+    x_distorted: np.ndarray,
+    y_distorted: np.ndarray,
+    distortion: Distortion,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Invert the OpenCV radial-tangential model for normalized pixel rays."""
+    xd = np.asarray(x_distorted, dtype=np.float64)
+    yd = np.asarray(y_distorted, dtype=np.float64)
+    if xd.shape != yd.shape:
+        raise ValueError("畸变矫正的 X/Y 像素数组形状必须一致")
+    if distortion.is_zero:
+        return xd, yd
+
+    x = xd.copy()
+    y = yd.copy()
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        for _ in range(10):
+            radius2 = x * x + y * y
+            radius4 = radius2 * radius2
+            radius6 = radius4 * radius2
+            numerator = (
+                1.0
+                + distortion.k1 * radius2
+                + distortion.k2 * radius4
+                + distortion.k3 * radius6
+            )
+            denominator = (
+                1.0
+                + distortion.k4 * radius2
+                + distortion.k5 * radius4
+                + distortion.k6 * radius6
+            )
+            tangential_x = (
+                2.0 * distortion.p1 * x * y
+                + distortion.p2 * (radius2 + 2.0 * x * x)
+            )
+            tangential_y = (
+                distortion.p1 * (radius2 + 2.0 * y * y)
+                + 2.0 * distortion.p2 * x * y
+            )
+            inverse_radial = denominator / numerator
+            x = (xd - tangential_x) * inverse_radial
+            y = (yd - tangential_y) * inverse_radial
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("畸变矫正产生了无效坐标，请检查畸变模型和系数")
+    return x, y
+
+
 def project_depth_to_point_cloud(
     depth_m: np.ndarray,
     rgb: np.ndarray,
@@ -153,6 +203,7 @@ def project_depth_to_point_cloud(
     min_depth: float | None = None,
     max_depth: float | None = None,
     max_points: int | None = None,
+    correct_distortion: bool = False,
 ) -> PointCloud:
     depth = np.asarray(depth_m, dtype=np.float64)
     color = np.asarray(rgb)
@@ -167,9 +218,23 @@ def project_depth_to_point_cloud(
     mask = valid_depth_mask(depth, min_depth, max_depth)
     mask = _sample_mask(mask, max_points)
     rows, columns = np.nonzero(mask)
-    z = depth[rows, columns]
-    x = (columns.astype(np.float64) - intrinsics.cx) * z / intrinsics.fx
-    y = (rows.astype(np.float64) - intrinsics.cy) * z / intrinsics.fy
-    points = np.column_stack((x, y, z)).astype(np.float32, copy=False)
+    distortion = intrinsics.distortion if correct_distortion else None
+    if correct_distortion and distortion is None:
+        raise ValueError("内参文件中没有 color_distortion，无法开启畸变矫正")
+    points = np.empty((len(rows), 3), dtype=np.float32)
+    # Keep temporary arrays small during full-resolution export and give
+    # Python a chance to handle Ctrl+C between chunks.
+    for start in range(0, len(rows), 250_000):
+        end = min(start + 250_000, len(rows))
+        z = depth[rows[start:end], columns[start:end]]
+        xd = (columns[start:end].astype(np.float64) - intrinsics.cx) / intrinsics.fx
+        yd = (rows[start:end].astype(np.float64) - intrinsics.cy) / intrinsics.fy
+        if distortion is not None:
+            x, y = undistort_normalized_points(xd, yd, distortion)
+        else:
+            x, y = xd, yd
+        points[start:end, 0] = x * z
+        points[start:end, 1] = y * z
+        points[start:end, 2] = z
     colors = color[rows, columns].astype(np.uint8, copy=False)
     return PointCloud(points=np.ascontiguousarray(points), colors=np.ascontiguousarray(colors))

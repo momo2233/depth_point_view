@@ -12,7 +12,7 @@ import tifffile
 import yaml
 from PIL import Image, UnidentifiedImageError
 
-from .models import DepthBundle, Intrinsics, RGBBundle
+from .models import DepthBundle, Distortion, Intrinsics, RGBBundle
 
 
 DEPTH_EXTENSIONS = {".png", ".tif", ".tiff", ".npy", ".npz"}
@@ -137,6 +137,26 @@ def _optional_positive_float(value: Any, name: str) -> float | None:
     return result
 
 
+def _parse_distortion(root: Mapping[str, Any], primary: Mapping[str, Any]) -> Distortion | None:
+    raw = root.get("color_distortion", root.get("distortion", primary.get("distortion")))
+    if raw is None:
+        return None
+    mapping = _as_mapping(raw, "color_distortion")
+    coefficients: dict[str, float] = {}
+    for name in ("k1", "k2", "k3", "k4", "k5", "k6", "p1", "p2"):
+        try:
+            value = float(mapping.get(name, 0.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"畸变参数 {name} 必须是数值") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"畸变参数 {name} 必须是有限数值")
+        coefficients[name] = value
+    model = mapping.get("model")
+    if model is not None and not isinstance(model, (str, int)):
+        raise ValueError("畸变模型 model 必须是字符串、整数或 null")
+    return Distortion(**coefficients, model=model)
+
+
 def intrinsics_from_mapping(data: Mapping[str, Any]) -> Intrinsics:
     root = _as_mapping(data, "内参文件")
     if isinstance(root.get("intrinsics"), Mapping):
@@ -189,6 +209,7 @@ def intrinsics_from_mapping(data: Mapping[str, Any]) -> Intrinsics:
         depth_scale=_optional_positive_float(
             _lookup(primary, root, "depth_scale"), "depth_scale"
         ),
+        distortion=_parse_distortion(root, primary),
     )
 
 
@@ -200,6 +221,7 @@ def make_intrinsics(
     width: int | None = None,
     height: int | None = None,
     depth_scale: float | None = None,
+    distortion: Distortion | None = None,
 ) -> Intrinsics:
     values = {"fx": fx, "fy": fy, "cx": cx, "cy": cy}
     for key, value in values.items():
@@ -215,6 +237,7 @@ def make_intrinsics(
         width=width,
         height=height,
         depth_scale=depth_scale,
+        distortion=distortion,
     )
 
 

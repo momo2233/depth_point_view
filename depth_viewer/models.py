@@ -6,6 +6,25 @@ import numpy as np
 
 
 @dataclass(frozen=True)
+class Distortion:
+    k1: float = 0.0
+    k2: float = 0.0
+    k3: float = 0.0
+    k4: float = 0.0
+    k5: float = 0.0
+    k6: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
+    model: str | int | None = None
+
+    @property
+    def is_zero(self) -> bool:
+        return not any(
+            (self.k1, self.k2, self.k3, self.k4, self.k5, self.k6, self.p1, self.p2)
+        )
+
+
+@dataclass(frozen=True)
 class Intrinsics:
     fx: float
     fy: float
@@ -14,6 +33,7 @@ class Intrinsics:
     width: int | None = None
     height: int | None = None
     depth_scale: float | None = None
+    distortion: Distortion | None = None
 
 
 @dataclass(frozen=True)

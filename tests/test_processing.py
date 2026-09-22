@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from depth_viewer.models import Intrinsics
+from depth_viewer.models import Distortion, Intrinsics
 from depth_viewer.processing import (
     COLORMAPS,
     depth_statistics,
@@ -16,6 +16,7 @@ from depth_viewer.processing import (
     render_pseudocolor,
     suggest_depth_scale,
     suggest_display_range,
+    undistort_normalized_points,
     validate_intrinsics_size,
 )
 
@@ -111,3 +112,53 @@ def test_projection_rejects_rgb_and_calibration_size_mismatch() -> None:
 
     with pytest.raises(ValueError, match="内参宽度"):
         validate_intrinsics_size(Intrinsics(1, 1, 0, 0, width=3), (2, 2))
+
+
+def test_undistort_normalized_points_inverts_radial_tangential_model() -> None:
+    distortion = Distortion(
+        k1=0.083156, k2=-0.111383, k3=0.046383,
+        k4=0.001, k5=-0.0005, k6=0.0001,
+        p1=-0.000647, p2=-0.000524,
+    )
+    x_true = np.array([0.0, 0.15, -0.45, 0.7])
+    y_true = np.array([0.0, -0.2, 0.3, -0.4])
+    r2 = x_true**2 + y_true**2
+    radial = (
+        1 + distortion.k1 * r2 + distortion.k2 * r2**2 + distortion.k3 * r2**3
+    ) / (
+        1 + distortion.k4 * r2 + distortion.k5 * r2**2 + distortion.k6 * r2**3
+    )
+    xd = x_true * radial + 2 * distortion.p1 * x_true * y_true + distortion.p2 * (r2 + 2 * x_true**2)
+    yd = y_true * radial + distortion.p1 * (r2 + 2 * y_true**2) + 2 * distortion.p2 * x_true * y_true
+
+    x_restored, y_restored = undistort_normalized_points(xd, yd, distortion)
+
+    np.testing.assert_allclose(x_restored, x_true, atol=1e-10)
+    np.testing.assert_allclose(y_restored, y_true, atol=1e-10)
+
+
+def test_distortion_toggle_changes_geometry_but_preserves_depth_and_colors() -> None:
+    depth = np.full((2, 3), 2.0)
+    rgb = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+    intrinsics = Intrinsics(
+        fx=2, fy=2, cx=0, cy=0,
+        distortion=Distortion(k1=0.2),
+    )
+
+    plain = project_depth_to_point_cloud(depth, rgb, intrinsics)
+    corrected = project_depth_to_point_cloud(
+        depth, rgb, intrinsics, correct_distortion=True
+    )
+
+    assert not np.allclose(corrected.points[:, :2], plain.points[:, :2])
+    np.testing.assert_array_equal(corrected.points[:, 2], plain.points[:, 2])
+    np.testing.assert_array_equal(corrected.colors, plain.colors)
+    np.testing.assert_allclose(corrected.points[0], plain.points[0])
+
+
+def test_distortion_toggle_requires_calibration_coefficients() -> None:
+    with pytest.raises(ValueError, match="color_distortion"):
+        project_depth_to_point_cloud(
+            np.ones((1, 1)), np.zeros((1, 1, 3), dtype=np.uint8),
+            Intrinsics(1, 1, 0, 0), correct_distortion=True,
+        )
