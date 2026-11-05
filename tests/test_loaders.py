@@ -192,3 +192,57 @@ def test_intrinsics_rejects_nonfinite_distortion() -> None:
 def test_intrinsics_reject_invalid_focal_length() -> None:
     with pytest.raises(ValueError, match="大于 0"):
         intrinsics_from_mapping({"fx": 0, "fy": 600, "cx": 1, "cy": 1})
+
+
+@pytest.fixture
+def orbbec_ini() -> bytes:
+    return b"""[ColorIntrinsic]
+fx=691.048096
+fy=691.494141
+cx=639.440857
+cy=358.881958
+width=1280
+height=720
+[ColorDistortion]
+k1=0.006595
+k2=-0.047663
+k3=0.032863
+p1=0.000113
+p2=0.000129
+[DepthIntrinsic]
+fx=420
+fy=421
+cx=424
+cy=240
+width=848
+height=480
+[DepthDistortion]
+k1=0
+p1=0
+[D2CTransformParam]
+rot0=1
+trans0=0
+"""
+
+
+def test_orbbec_ini_selects_matching_intrinsics_and_distortion(orbbec_ini: bytes) -> None:
+    color = load_intrinsics_bytes(b"\xef\xbb\xbf" + orbbec_ini, "camera.INI")
+    depth = load_intrinsics_bytes(orbbec_ini, "camera.ini", camera="depth")
+
+    assert (color.width, color.height) == (1280, 720)
+    assert color.fx == pytest.approx(691.048096)
+    assert color.distortion.k2 == pytest.approx(-0.047663)
+    assert color.distortion.p2 == pytest.approx(0.000129)
+    assert (depth.width, depth.height, depth.fx) == (848, 480, 420)
+    assert depth.distortion.is_zero
+
+
+@pytest.mark.parametrize("data, message", [
+    (b"fx=1", "无法解析"),
+    (b"[Other]\nfx=1", "ColorIntrinsic"),
+    (b"[ColorIntrinsic]\nfx=1", "fy"),
+    (b"[ColorIntrinsic]\nfx=1\nfx=2", "无法解析"),
+])
+def test_orbbec_ini_reports_invalid_files(data: bytes, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        load_intrinsics_bytes(data, "camera.ini")

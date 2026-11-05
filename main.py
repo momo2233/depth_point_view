@@ -40,8 +40,8 @@ T = TypeVar("T")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def cached_load_intrinsics(data: bytes, filename: str):
-    return load_intrinsics_bytes(data, filename)
+def cached_load_intrinsics(data: bytes, filename: str, camera: str = "color"):
+    return load_intrinsics_bytes(data, filename, camera=camera)
 
 
 def session_cached(name: str, token: tuple, factory: Callable[[], T]) -> T:
@@ -227,7 +227,7 @@ def render_intro() -> None:
 
         - Depth：PNG、TIFF、NPY、NPZ（二维整型或浮点数组）
         - RGB：PNG、JPEG、TIFF、BMP、WebP
-        - 内参：JSON、YAML，支持 `fx/fy/cx/cy`、`K` 或 `camera_matrix.data`
+        - 内参：JSON、YAML、Orbbec INI，支持彩色/深度参数组选择
         - 点云：ASCII 或二进制 PLY，支持有颜色或无颜色顶点
         """
     )
@@ -246,6 +246,67 @@ def reset_current_data() -> None:
     for key in list(st.session_state):
         del st.session_state[key]
     st.session_state["input_generation"] = generation
+
+
+def reset_intrinsics() -> None:
+    generation = int(st.session_state.get("intrinsics_generation", 0)) + 1
+    for key in list(st.session_state):
+        if key.startswith(("intrinsics_", "_intrinsics_")):
+            del st.session_state[key]
+    st.session_state["intrinsics_generation"] = generation
+
+
+def render_intrinsics_controls(upload) -> tuple[Intrinsics | None, Intrinsics | None, str]:
+    """Keep calibration widgets mounted even when no image is uploaded."""
+    st.divider()
+    st.subheader("相机参数")
+    widget_suffix = (
+        f"{st.session_state.get('input_generation', 0)}_"
+        f"{st.session_state.get('intrinsics_generation', 0)}"
+    )
+    if upload is not None:
+        camera = "color"
+        if Path(upload.name).suffix.lower() == ".ini":
+            camera = st.selectbox(
+                "INI 参数组",
+                ["color", "depth"],
+                format_func=lambda value: "彩色 ColorIntrinsic" if value == "color" else "深度 DepthIntrinsic",
+                key=f"intrinsics_camera_{widget_suffix}",
+                help="已对齐到彩色图的 depth 通常使用彩色内参；原生深度图使用深度内参。",
+            )
+        data = upload.getvalue()
+        source_token = short_token(data, camera)
+        if source_token != st.session_state.get("_intrinsics_source_token"):
+            try:
+                loaded = cached_load_intrinsics(data, upload.name, camera)
+            except ValueError as exc:
+                st.error(str(exc))
+                st.caption("未替换当前保留的内参，请检查文件。")
+            else:
+                st.session_state["_intrinsics_file"] = loaded
+                st.session_state["_intrinsics_source_token"] = source_token
+                st.session_state["_intrinsics_source_name"] = (
+                    f"{upload.name} · {camera}" if Path(upload.name).suffix.lower() == ".ini"
+                    else upload.name
+                )
+                for name in ("fx", "fy", "cx", "cy"):
+                    st.session_state[f"intrinsics_{name}_{widget_suffix}"] = format_number(getattr(loaded, name))
+
+    file_intrinsics = st.session_state.get("_intrinsics_file")
+    if file_intrinsics:
+        st.caption(f"已保留：{st.session_state['_intrinsics_source_name']}")
+        if file_intrinsics.width is not None or file_intrinsics.height is not None:
+            st.caption(f"标定尺寸：{file_intrinsics.width or '未声明'} × {file_intrinsics.height or '未声明'}")
+    st.caption("更换或移除图像会保留内参；“清理内参”单独清空，“一键清理”清空全部。")
+    form_values = {
+        name: st.text_input(name, key=f"intrinsics_{name}_{widget_suffix}")
+        for name in ("fx", "fy", "cx", "cy")
+    }
+    intrinsics, error = parse_form_intrinsics(form_values, file_intrinsics)
+    if error:
+        st.error(error)
+    token = st.session_state.get("_intrinsics_source_token", "manual")
+    return intrinsics, file_intrinsics, token
 
 
 def main() -> None:
@@ -285,16 +346,22 @@ def main() -> None:
             type=["png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"],
             key=f"rgb_upload_{input_generation}",
         )
+        st.button(
+            "清理内参",
+            on_click=reset_intrinsics,
+            help="仅清空内参文件、内参数值和畸变参数，保留当前 RGB、depth 和点云文件。",
+        )
         intrinsics_upload = st.file_uploader(
             "内参文件",
-            type=["json", "yaml", "yml"],
-            key=f"intrinsics_upload_{input_generation}",
+            type=["json", "yaml", "yml", "ini"],
+            key=f"intrinsics_upload_{input_generation}_{st.session_state.get('intrinsics_generation', 0)}",
         )
         cloud_upload = st.file_uploader(
             "直接查看点云（PLY）",
             type=["ply"],
             key=f"cloud_upload_{input_generation}",
         )
+        intrinsics, file_intrinsics, intrinsics_token = render_intrinsics_controls(intrinsics_upload)
 
     if depth_upload is None:
         if cloud_upload is None:
@@ -352,46 +419,7 @@ def main() -> None:
         except ValueError as exc:
             rgb_error = str(exc)
 
-    file_intrinsics = None
-    intrinsics_file_error = None
-    intrinsics_token = "manual"
-    if intrinsics_upload is not None:
-        intrinsics_data = intrinsics_upload.getvalue()
-        intrinsics_token = short_token(intrinsics_data)
-        try:
-            file_intrinsics = cached_load_intrinsics(
-                intrinsics_data, intrinsics_upload.name
-            )
-        except ValueError as exc:
-            intrinsics_file_error = str(exc)
-
     with st.sidebar:
-        st.divider()
-        st.subheader("相机参数")
-        if intrinsics_file_error:
-            st.error(intrinsics_file_error)
-        elif file_intrinsics:
-            st.success("已读取内参文件，可在下方覆盖参数")
-
-        defaults = file_intrinsics or Intrinsics(0.0, 0.0, 0.0, 0.0)
-        form_values = {
-            "fx": st.text_input(
-                "fx", value=format_number(defaults.fx) if defaults.fx else "", key=f"fx_{intrinsics_token}"
-            ),
-            "fy": st.text_input(
-                "fy", value=format_number(defaults.fy) if defaults.fy else "", key=f"fy_{intrinsics_token}"
-            ),
-            "cx": st.text_input(
-                "cx", value=format_number(defaults.cx) if file_intrinsics else "", key=f"cx_{intrinsics_token}"
-            ),
-            "cy": st.text_input(
-                "cy", value=format_number(defaults.cy) if file_intrinsics else "", key=f"cy_{intrinsics_token}"
-            ),
-        }
-        intrinsics, intrinsics_error = parse_form_intrinsics(form_values, file_intrinsics)
-        if intrinsics_error:
-            st.error(intrinsics_error)
-
         default_scale = (
             file_intrinsics.depth_scale
             if file_intrinsics and file_intrinsics.depth_scale is not None
@@ -608,7 +636,7 @@ def main() -> None:
             )
             if has_distortion:
                 st.caption(
-                    "使用内参文件中的 color_distortion：k1–k6、p1、p2；"
+                    "使用当前参数组的畸变系数：k1–k6、p1、p2；"
                     "按 OpenCV Brown–Conrady 模型解释。若图像已去畸变，请保持关闭。"
                 )
                 if intrinsics.distortion.model is not None:
@@ -617,7 +645,7 @@ def main() -> None:
                         "矫正开关按 OpenCV 模型试算，请对比效果。"
                     )
             else:
-                st.caption("内参文件未提供非零 color_distortion，畸变矫正不可用。")
+                st.caption("当前内参未提供非零畸变参数，畸变矫正不可用。")
 
             if cloud_max < cloud_min:
                 st.error("点云最大深度不能小于最小深度。")

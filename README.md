@@ -7,7 +7,7 @@
 - Depth：支持 PNG、TIFF、NPY、NPZ，保留整数和浮点深度精度。
 - RGB：支持 PNG、JPEG、TIFF、BMP、WebP。
 - 伪彩图：2%–98% 自动显示范围、手动范围、9 种配色、反转、右键复制和原始分辨率 PNG 下载。
-- 内参：支持手工输入和 JSON/YAML 文件。
+- 内参：支持手工输入、JSON/YAML 和 Orbbec INI 文件；更换图像时保留，可单独手动清理。
 - 点云：浏览器中旋转、缩放、平移；预览默认最多 5 万点（可选 2 万、10 万或 20 万）；可切换畸变矫正对比几何效果。
 - 直接点云查看：上传 ASCII 或二进制 PLY，无需 RGB、depth 或相机内参。
 - 导出：当前过滤范围内的全量彩色点云，binary little-endian PLY 格式。
@@ -50,10 +50,10 @@ pytest -q
 1. 在左侧上传 depth 文件。
 2. 在“Depth 伪彩图”页选择配色、反转和显示范围。默认展示缩小的快速预览，可右键复制/另存；如需右键复制原始分辨率图像，请打开“原始分辨率预览（较慢）”。下载按钮始终保存原始分辨率的无损 PNG。
 3. 上传与 depth **已经配准且宽高完全一致**的 RGB 图像。
-4. 上传内参文件，或填写 `fx`、`fy`、`cx`、`cy`。
+4. 上传内参文件，或填写 `fx`、`fy`、`cx`、`cy`。Orbbec INI 可选择“彩色 ColorIntrinsic”或“深度 DepthIntrinsic”，默认彩色参数组。更换或移除 RGB/depth 图像会保留当前内参；点击“清理内参”可单独清空内参文件、手填值和畸变参数。内参在当前浏览器会话内保留。
 5. 确认“原始值 → 米倍率”。整型 depth 默认建议 `0.001`，浮点 depth 默认建议 `1.0`。
 6. 在“RGB-D 点云”页调整过滤范围、点大小和背景；若内参文件带 `color_distortion`，可开关“畸变矫正”对比效果，再下载对应状态的全量 PLY。
-7. 查看完毕后，点击侧栏顶部的“一键清理当前数据”，即可清空上传文件、页面设置和生成缓存并查看下一组数据。
+7. 查看完毕后，可直接更换图像并继续使用当前内参；侧栏顶部的“一键清理当前数据”优先清空全部上传文件、内参、页面设置和生成缓存。
 
 也可以只上传一个 PLY 文件，在没有 RGB-D 数据时直接进入交互式点云查看。PLY 顶点必须包含 `x/y/z`，颜色支持 `red/green/blue` 或 `r/g/b`；无颜色点云会使用默认蓝色。
 
@@ -66,6 +66,8 @@ pytest -q
 - 不支持有损 JPEG depth、RAW/BIN、EXR、视差图或带多个通道的 depth。
 
 ## 内参格式
+
+Orbbec `.ini` 文件可直接上传，无需转换为 JSON。工具读取所选 `[ColorIntrinsic]` / `[DepthIntrinsic]` 中的 `fx/fy/cx/cy/width/height`，以及对应 `[ColorDistortion]` / `[DepthDistortion]` 中的 `k1`–`k6`、`p1`、`p2`。已对齐到彩色图的 depth 通常选择彩色参数组，原生深度图选择深度参数组；尺寸以文件内容为准，不根据文件名推断或自动缩放。`[D2CTransformParam]` 不会自动执行重投影，RGB 和 depth 仍需事先配准。
 
 推荐格式见 [`examples/intrinsics.yaml`](examples/intrinsics.yaml)：
 

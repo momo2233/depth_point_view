@@ -4,6 +4,7 @@ import io
 import json
 import math
 from collections.abc import Mapping
+from configparser import ConfigParser, Error as ConfigError
 from pathlib import Path
 from typing import Any
 
@@ -241,16 +242,32 @@ def make_intrinsics(
     )
 
 
-def load_intrinsics_bytes(data: bytes, filename: str) -> Intrinsics:
+def load_intrinsics_bytes(
+    data: bytes, filename: str, camera: str = "color"
+) -> Intrinsics:
     suffix = _suffix(filename)
-    if suffix not in {".json", ".yaml", ".yml"}:
-        raise ValueError("内参文件仅支持 JSON、YAML 或 YML")
+    if suffix not in {".json", ".yaml", ".yml", ".ini"}:
+        raise ValueError("内参文件仅支持 JSON、YAML、YML 或 INI")
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ValueError("内参文件必须使用 UTF-8 编码") from exc
     try:
-        parsed = json.loads(text) if suffix == ".json" else yaml.safe_load(text)
-    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        if suffix == ".ini":
+            if camera not in {"color", "depth"}:
+                raise ValueError("INI 相机参数组必须为 color 或 depth")
+            config = ConfigParser(interpolation=None)
+            config.read_string(text)
+            sections = {name.lower(): name for name in config.sections()}
+            intrinsic_name = f"{camera}intrinsic"
+            if intrinsic_name not in sections:
+                raise ValueError(f"INI 内参文件缺少 [{camera.title()}Intrinsic]")
+            parsed = {"intrinsics": dict(config[sections[intrinsic_name]])}
+            distortion_name = f"{camera}distortion"
+            if distortion_name in sections:
+                parsed["distortion"] = dict(config[sections[distortion_name]])
+        else:
+            parsed = json.loads(text) if suffix == ".json" else yaml.safe_load(text)
+    except (json.JSONDecodeError, yaml.YAMLError, ConfigError) as exc:
         raise ValueError(f"无法解析内参文件：{exc}") from exc
     return intrinsics_from_mapping(_as_mapping(parsed, "内参文件"))
