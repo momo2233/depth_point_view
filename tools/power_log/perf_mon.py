@@ -8,7 +8,7 @@
   * 纯标准库，无第三方依赖（python3 即可跑）
   * 自动选择 GPU 后端：
       - x86 + 独显   : nvidia-smi（GPU 计算占用率、独立显存、温度、功耗、SM 频率）
-      - Jetson       : tegrastats（GR3D_FREQ、统一内存、温度、VDD_IN 功耗）
+      - Jetson       : tegrastats（GR3D_FREQ、温度、各电源轨功耗）+ nvmap 显存
       - 兜底         : sysfs devfreq load
   * -p 可顺带统计某进程（PID 或进程名）的 CPU% 与 RSS，进程重启会自动重新捕获
   * --csv 可同时落一份采样表，便于事后画图
